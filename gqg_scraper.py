@@ -11,14 +11,24 @@ from pathlib import Path
 with open("global_equity_fund.json", "r") as f:
     fund_data = json.load(f)
 
-gics_excel = "gqg_factsheet_gics.xlsx"
-holdings_excel = "gqg_factsheet_holdings.xlsx"
-countries_excel = "gqg_factsheet_countries.xlsx"
+# Initialize lists to collect all data
+all_gics_data = []
+all_holdings_data = []
+all_countries_data = []
+
+# Excel files for ranked format only
+gics_ranked_excel = "gqg_factsheet_gics_ranked_format.xlsx"
+holdings_ranked_excel = "gqg_factsheet_holdings_ranked_format.xlsx"
+countries_ranked_excel = "gqg_factsheet_countries_ranked_format.xlsx"
+
+# Track processing order for proper month sequencing
+month_order = []
 
 for month, url in fund_data.items():
     if not url or url.strip() in ("", "?"):
         continue
     print(f"Processing {month}: {url}")
+    month_order.append(month)
 
     # Download PDF and read content
     response = requests.get(url)
@@ -56,7 +66,7 @@ for month, url in fund_data.items():
         except ValueError:
             return 0.0  # Treat NaN as 0
 
-    def parse_gics_table(gics_text):
+    def parse_gics_table(gics_text, month):
         lines = gics_text.splitlines()
         header_idx = None
         for i, line in enumerate(lines):
@@ -64,9 +74,9 @@ for month, url in fund_data.items():
                 header_idx = i
                 break
         if header_idx is None:
-            return pd.DataFrame()
+            return []
         data_lines = lines[header_idx+1:]
-        table = []
+        records = []
         
         for line in data_lines:
             line = line.strip()
@@ -77,11 +87,12 @@ for month, url in fund_data.items():
             )
             if match:
                 sector, fund, index, diff = match.groups()
-                table.append({
-                    "Sector": sector.strip(),
+                records.append({
+                    "Month": month,
+                    "Entity": sector.strip(),
                     "Fund": safe_float(fund),
                     "Index": safe_float(index),
-                    "-/+": safe_float(diff)
+                    "Difference": safe_float(diff)
                 })
             else:
                 match2 = re.match(
@@ -90,15 +101,16 @@ for month, url in fund_data.items():
                 )
                 if match2:
                     sector, fund, diff = match2.groups()
-                    table.append({
-                        "Sector": sector.strip(),
+                    records.append({
+                        "Month": month,
+                        "Entity": sector.strip(),
                         "Fund": safe_float(fund),
                         "Index": 0.0,  # Treat missing index as 0
-                        "-/+": safe_float(diff)
+                        "Difference": safe_float(diff)
                     })
-        return pd.DataFrame(table)
+        return records
 
-    def parse_holdings_table(holdings_text):
+    def parse_holdings_table(holdings_text, month):
         lines = holdings_text.splitlines()
         header_idx = None
         for i, line in enumerate(lines):
@@ -106,21 +118,22 @@ for month, url in fund_data.items():
                 header_idx = i
                 break
         if header_idx is None:
-            return pd.DataFrame()
+            return []
         data_lines = lines[header_idx+1:]
-        table = []
+        records = []
         for line in data_lines:
             # Fix: allow for company names with commas, apostrophes, and multiple spaces
             match = re.match(r"^([A-Za-z0-9\s\.\-&',/]+)\s+([\d\.\-]+)$", line.strip())
             if match:
                 company, percent = match.groups()
-                table.append({
-                    "Company": company.strip(),
-                    "Holdings %": safe_float(percent)
+                records.append({
+                    "Month": month,
+                    "Entity": company.strip(),
+                    "Holdings_Percent": safe_float(percent)
                 })
-        return pd.DataFrame(table)
+        return records
 
-    def parse_countries_table(countries_text):
+    def parse_countries_table(countries_text, month):
         lines = countries_text.splitlines()
         header_idx = None
         for i, line in enumerate(lines):
@@ -128,59 +141,110 @@ for month, url in fund_data.items():
                 header_idx = i
                 break
         if header_idx is None:
-            return pd.DataFrame()
+            return []
         data_lines = lines[header_idx+1:]
-        table = []
+        records = []
         for line in data_lines:
             match = re.match(r"^([A-Za-z\s]+)\s+([\d\.\-]+)\s+([\d\.\-]+)\s+([\d\.\-]+)", line.strip())
             if match:
                 country, fund, index, diff = match.groups()
-                table.append({
-                    "Country": country.strip(),
+                records.append({
+                    "Month": month,
+                    "Entity": country.strip(),
                     "Fund": safe_float(fund),
                     "Index": safe_float(index),
-                    "-/+": safe_float(diff)
+                    "Difference": safe_float(diff)
                 })
-        return pd.DataFrame(table)
+        return records
 
-    # Parse and save GICS Sectors table
+    # Parse and collect data
     if gics_data:
-        gics_df = parse_gics_table(gics_data[0])
-        if not gics_df.empty:
-            gics_exists = Path(gics_excel).exists()
-            if gics_exists:
-                with pd.ExcelWriter(gics_excel, mode="a", engine="openpyxl", if_sheet_exists="replace") as writer:
-                    gics_df.to_excel(writer, sheet_name=month, index=False)
-            else:
-                with pd.ExcelWriter(gics_excel, mode="w", engine="openpyxl") as writer:
-                    gics_df.to_excel(writer, sheet_name=month, index=False)
-            print("GICS Sectors Table:")
-            print(gics_df.to_string(index=False))
+        gics_records = parse_gics_table(gics_data[0], month)
+        all_gics_data.extend(gics_records)
+        print(f"GICS Sectors collected: {len(gics_records)} records")
 
-    # Parse and save Top 10 Holdings table
     if holdings_data:
-        holdings_df = parse_holdings_table(holdings_data[0])
-        if not holdings_df.empty:
-            holdings_exists = Path(holdings_excel).exists()
-            if holdings_exists:
-                with pd.ExcelWriter(holdings_excel, mode="a", engine="openpyxl", if_sheet_exists="replace") as writer:
-                    holdings_df.to_excel(writer, sheet_name=month, index=False)
-            else:
-                with pd.ExcelWriter(holdings_excel, mode="w", engine="openpyxl") as writer:
-                    holdings_df.to_excel(writer, sheet_name=month, index=False)
-            print("\nTop 10 Holdings Table:")
-            print(holdings_df.to_string(index=False))
+        holdings_records = parse_holdings_table(holdings_data[0], month)
+        all_holdings_data.extend(holdings_records)
+        print(f"Holdings collected: {len(holdings_records)} records")
 
-    # Parse and save Top 10 Countries table
     if countries_data:
-        countries_df = parse_countries_table(countries_data[0])
-        if not countries_df.empty:
-            countries_exists = Path(countries_excel).exists()
-            if countries_exists:
-                with pd.ExcelWriter(countries_excel, mode="a", engine="openpyxl", if_sheet_exists="replace") as writer:
-                    countries_df.to_excel(writer, sheet_name=month, index=False)
+        countries_records = parse_countries_table(countries_data[0], month)
+        all_countries_data.extend(countries_records)
+        print(f"Countries collected: {len(countries_records)} records")
+
+def create_ranked_format_df(data_records, value_column, format_as_percent=True):
+    """Create a ranked format showing top 10 entries per month with individual month columns"""
+    if not data_records:
+        return pd.DataFrame()
+    
+    df = pd.DataFrame(data_records)
+    months = [m for m in month_order if m in df['Month'].unique()]
+    
+    # Create individual DataFrames for each month, then combine horizontally
+    month_dfs = []
+    
+    for month in months:
+        month_data = df[df['Month'] == month].copy()
+        month_data = month_data.sort_values(value_column, ascending=False).head(10)
+        
+        # Create month DataFrame with rank
+        month_df = pd.DataFrame({
+            'Rank': range(1, 11),
+            'Month': [month] * 10,
+            'Company': [''] * 10,
+            'Holding %': [''] * 10
+        })
+        
+        # Fill in the actual data
+        for i in range(min(len(month_data), 10)):
+            month_df.loc[i, 'Company'] = month_data.iloc[i]['Entity']
+            value = month_data.iloc[i][value_column]
+            if format_as_percent:
+                month_df.loc[i, 'Holding %'] = f"{value:.1f}%" if pd.notna(value) else "0.0%"
             else:
-                with pd.ExcelWriter(countries_excel, mode="w", engine="openpyxl") as writer:
-                    countries_df.to_excel(writer, sheet_name=month, index=False)
-            print("\nTop 10 Countries Table:")
-            print(countries_df.to_string(index=False))
+                month_df.loc[i, 'Holding %'] = f"{value:.1f}" if pd.notna(value) else "0.0"
+        
+        month_dfs.append(month_df)
+    
+    # Combine all month DataFrames horizontally
+    if month_dfs:
+        # Start with the first month's Rank column
+        result_df = month_dfs[0][['Rank']].copy()
+        
+        # Add each month's columns with the specified headers
+        for i, month_df in enumerate(month_dfs):
+            month_cols = ['Month', 'Company', 'Holding %']
+            for col in month_cols:
+                result_df[f'{months[i]}_{col}'] = month_df[col]
+        
+        return result_df
+    else:
+        return pd.DataFrame()
+
+# Create ranked format DataFrames for all data types
+print("\nCreating ranked format DataFrames...")
+
+# GICS Sectors ranked format (sorted by Fund percentage, largest to smallest)
+if all_gics_data:
+    gics_ranked_df = create_ranked_format_df(all_gics_data, 'Fund', format_as_percent=True)
+    gics_ranked_df.to_excel(gics_ranked_excel, index=False)
+    
+
+# Holdings ranked format (sorted by Holdings_Percent, largest to smallest)
+if all_holdings_data:
+    holdings_ranked_df = create_ranked_format_df(all_holdings_data, 'Holdings_Percent', format_as_percent=True)
+    holdings_ranked_df.to_excel(holdings_ranked_excel, index=False)
+    
+
+# Countries ranked format (sorted by Fund percentage, largest to smallest)
+if all_countries_data:
+    countries_ranked_df = create_ranked_format_df(all_countries_data, 'Fund', format_as_percent=True)
+    countries_ranked_df.to_excel(countries_ranked_excel, index=False)
+    
+# Summary
+print(f"\nProcessed {len(month_order)} months: {month_order}")
+print(f"Total entities - GICS: {len(set(r['Entity'] for r in all_gics_data))}")
+print(f"Total entities - Holdings: {len(set(r['Entity'] for r in all_holdings_data))}")
+print(f"Total entities - Countries: {len(set(r['Entity'] for r in all_countries_data))}")
+print("\nAll data is now in ranked format showing Top 10 for each month, sorted from largest to smallest.")
